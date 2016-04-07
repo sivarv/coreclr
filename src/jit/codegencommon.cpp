@@ -4029,7 +4029,7 @@ void            CodeGen::genFnPrologCalleeRegArgs(regNumber xtraReg,
                 else
 #endif
                 {
-                    regType = compiler->getEightByteType(structDesc, slotCounter);
+                    regType = compiler->GetEightByteType(structDesc, slotCounter);
                 }
                 
                 regArgNum = genMapRegNumToRegArgNum(regNum, regType);

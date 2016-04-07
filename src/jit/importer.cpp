@@ -1118,8 +1118,10 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
 
     if (src->gtOper == GT_CALL)
     {
-        if (src->gtCall.gtCallMoreFlags & GTF_CALL_M_RETBUFFARG)
+        if (src->AsCall()->HasRetBufArg())
         {
+            // Case of call returning a struct via hidden retbuf arg
+
             // insert the return value buffer into the argument list as first byref parameter
             src->gtCall.gtCallArgs = gtNewListNode(dest, src->gtCall.gtCallArgs);
 
@@ -1131,6 +1133,8 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
         }
         else
         {
+            // Case of call returning a struct in register(s)
+
             var_types returnType = (var_types)src->gtCall.gtReturnType;
 
             // We don't need a return buffer, so just change this to "(returnType)*dest = call"
@@ -1138,11 +1142,19 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
 
             if ((dest->gtOper == GT_ADDR) && (dest->gtOp.gtOp1->gtOper == GT_LCL_VAR))
             {
+                // If it is a multi-reg struct return, don't change the oper to GT_LCL_FLD.
+                // That is, IR will be of the form lclVar = call for multi-reg return
+
                 GenTreePtr lcl = dest->gtOp.gtOp1;
-                lcl->ChangeOper(GT_LCL_FLD);
-                fgLclFldAssign(lcl->gtLclVarCommon.gtLclNum);
+                if (!src->AsCall()->HasMultiRegRetVal())
+                {
+                    lcl->ChangeOper(GT_LCL_FLD);
+                    fgLclFldAssign(lcl->gtLclVarCommon.gtLclNum);
+                }                
+
                 lcl->gtType = src->gtType;
                 dest = lcl;
+
 #if defined(_TARGET_ARM_)
                 impMarkLclDstNotPromotable(lcl->gtLclVarCommon.gtLclNum, src, structHnd);
 #elif defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
@@ -7054,7 +7066,7 @@ GenTreePtr                Compiler::impFixupCallStructReturn(GenTreePtr     call
     callNode->gtReturnType = call->gtType;
 
     // Initialize Return type descriptor of call node    
-    ReturnTypeDesc* retTypeDesc = &callNode->gtReturnTypeDesc;
+    ReturnTypeDesc* retTypeDesc = callNode->GetReturnTypeDesc();
     retTypeDesc->Initialize(this, retClsHnd);
 
     unsigned retRegCount = retTypeDesc->GetReturnRegCount();
@@ -13676,6 +13688,10 @@ bool Compiler::impReturnInstruction(BasicBlock *block, int prefixFlags, OPCODE &
             // we don't unconditionally overwrite it, it shouldn't matter.
             if (info.compRetNativeType != TYP_STRUCT)
             {
+                // compretNativeType is not TYP_STRUCT.
+                // This implies it could be either a scalar type or SIMD vector type or 
+                // a struct type that can be normalized to a scalar type.
+
                 if (varTypeIsStruct(info.compRetType))
                 {
                     noway_assert(info.compRetBuffArg == BAD_VAR_NUM);
@@ -13775,6 +13791,9 @@ bool Compiler::impReturnInstruction(BasicBlock *block, int prefixFlags, OPCODE &
             }
             else
             {
+                // compRetNativeType is TYP_STRUCT.
+                // This implies that struct return via RetBuf arg or multi-reg struct return
+
                 GenTreePtr iciCall = impInlineInfo->iciCall;
                 assert(iciCall->gtOper == GT_CALL);
 
@@ -13788,10 +13807,11 @@ bool Compiler::impReturnInstruction(BasicBlock *block, int prefixFlags, OPCODE &
                     assert(fgMoreThanOneReturnBlock());
 
                     impAssignTempGen(lvaInlineeReturnSpillTemp,
-                        op2,
-                        se.seTypeInfo.GetClassHandle(),
-                        (unsigned)CHECK_SPILL_ALL);
+                                     op2,
+                                     se.seTypeInfo.GetClassHandle(),
+                                     (unsigned)CHECK_SPILL_ALL);
                 }
+
                 // TODO-ARM64-NYI: HFA
                 // TODO-AMD64-Unix and TODO-ARM once the ARM64 functionality is implemented the
                 // next ifdefs could be refactored in a single method with the ifdef inside.
@@ -13801,13 +13821,15 @@ bool Compiler::impReturnInstruction(BasicBlock *block, int prefixFlags, OPCODE &
                 {
                     // Same as !IsHfa but just don't bother with impAssignStructPtr.
 #else // !defined(_TARGET_ARM_)
-                SYSTEMV_AMD64_CORINFO_STRUCT_REG_PASSING_DESCRIPTOR structDesc;
-                eeGetSystemVAmd64PassStructInRegisterDescriptor(retClsHnd, &structDesc);
-                if (structDesc.passedInRegisters)
+                ReturnTypeDesc retTypeDesc;
+                retTypeDesc.Initialize(this, retClsHnd);
+                unsigned retRegCount = retTypeDesc.GetReturnRegCount();
+
+                if (retRegCount != 0)
                 {
                     // If single eightbyte, the return type would have been normalized and there won't be a temp var.
                     // This code will be called only if the struct return has not been normalized (i.e. 2 eightbytes - max allowed.)
-                    assert(structDesc.eightByteCount == CLR_SYSTEMV_MAX_EIGHTBYTES_COUNT_TO_PASS_IN_REGISTERS);
+                    assert(retRegCount == CLR_SYSTEMV_MAX_EIGHTBYTES_COUNT_TO_RETURN_IN_REGISTERS);
                     // Same as !structDesc.passedInRegisters but just don't bother with impAssignStructPtr.
 #endif // !defined(_TARGET_ARM_)
 

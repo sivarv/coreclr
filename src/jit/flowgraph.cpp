@@ -21706,8 +21706,14 @@ void Compiler::fgAttachStructInlineeToAsg(GenTreePtr tree, GenTreePtr child, COR
     assert(tree->gtOper == GT_ASG);
 
     // We have an assignment, we codegen only V05 = call().
-    if (child->gtOper == GT_CALL && tree->gtOp.gtOp1->gtOper == GT_LCL_VAR)
+    if (child->OperGet() == GT_CALL && tree->gtGetOp1()->OperGet() == GT_LCL_VAR)
     {
+        if (child->AsCall()->HasMultiRegRetVal())
+        {
+            GenTreeLclVarCommon* lclvar = tree->gtGetOp1()->AsLclVarCommon();
+            LclVarDsc* varDsc = &lvaTable[lclvar->gtLclNum];
+            varDsc->lvIsMultiRegArgOrRet = true;
+        }
         return;
     }
 

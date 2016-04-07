@@ -13403,7 +13403,7 @@ bool GenTree::isCommutativeSIMDIntrinsic()
 #endif //FEATURE_SIMD
 
 //-------------------------------------------------------------------------
-// Initialize: Multi-reg Return Type Descriptor given type handle.
+// Initialize: Return Type Descriptor given type handle.
 // 
 // Arguments
 //    comp        -  Compiler Instance
@@ -13427,13 +13427,13 @@ void ReturnTypeDesc::Initialize(Compiler* comp, CORINFO_CLASS_HANDLE retClsHnd)
     {
         if (structDesc.eightByteCount == 1)
         {
-            m_regType0 = comp->getEightByteType(structDesc, 0);
+            m_regType0 = comp->GetEightByteType(structDesc, 0);
         }
         else
         {
             assert(structDesc.eightByteCount == 2);
-            m_regType0 = comp->getEightByteType(structDesc, 0);
-            m_regType1 = comp->getEightByteType(structDesc, 1);
+            m_regType0 = comp->GetEightByteType(structDesc, 0);
+            m_regType1 = comp->GetEightByteType(structDesc, 1);
         }
     }
 
@@ -13442,4 +13442,91 @@ void ReturnTypeDesc::Initialize(Compiler* comp, CORINFO_CLASS_HANDLE retClsHnd)
 #endif
 
 #endif // FEATURE_UNIX_AMD64_STRUCT_PASSING
+}
+
+regNumber ReturnTypeDesc::GetABIReturnReg(unsigned idx)
+{
+    assert(idx > 0);
+
+    unsigned count = GetReturnRegCount();
+    assert(idx <= count);
+
+    regNumber resultReg = REG_NA;
+
+#ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
+    var_types regType1 = GetReturnRegType(1);
+
+    if (idx == 1)
+    {
+        if (varTypeIsIntegralOrI(regType1))
+        {
+            resultReg = REG_INTRET;
+        }
+        else {
+            noway_assert(varTypeIsFloating(regType1));
+            resultReg = REG_FLOATRET;
+        }
+    }
+    else if (idx == 2)
+    {
+        var_types regType2 = GetReturnRegType(2);
+
+        if (varTypeIsIntegralOrI(regType2))
+        {
+            if (varTypeIsIntegralOrI(regType1))
+            {
+                resultReg = REG_INTRET_1;
+            }
+            else
+            {
+                resultReg = REG_INTRET;
+            }
+        }
+        else 
+        {
+            noway_assert(varTypeIsFloating(regType2));
+
+            if (varTypeIsFloating(regType1))
+            {
+                resultReg = REG_FLOATRET_1;
+            }
+            else
+            {
+                resultReg = REG_FLOATRET;
+            }
+        }
+    }
+#endif //FEATURE_UNIX_AMD64_STRUCT_PASSING
+
+    assert(resultReg != REG_NA);
+    return resultReg;
+}
+
+//-------------------------------------------------------------------------------------
+// GetABIReturnRegs: get the mask of return registers as per target arch ABI given
+// ReturnTypeDesc.
+//
+// Arguments:
+//    None
+// 
+// Return Value:
+//    reg mask of return registers in which the return type is returned.
+//
+// Note:
+//    For now this is implemented only for x64 Unix.
+//    This routine can be used when the caller doesn't care about the order
+//    of return registers and want to know the set of return registers.
+//
+//static
+regMaskTP ReturnTypeDesc::GetABIReturnRegs()
+{
+    regMaskTP resultMask = RBM_NONE;
+
+    unsigned count = GetReturnRegCount();
+    for (unsigned i = 1; i <= count; ++i)
+    {
+        resultMask |= genRegMask(GetABIReturnReg(i));
+    }
+
+    return resultMask;
 }

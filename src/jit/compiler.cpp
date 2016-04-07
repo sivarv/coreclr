@@ -4713,165 +4713,165 @@ unsigned getMethodBodyChecksum(__in_z char *code, int size)
 }
 
 
-int           Compiler::compCompileHelper (CORINFO_MODULE_HANDLE            classPtr,
-                                           COMP_HANDLE                      compHnd,
-                                           CORINFO_METHOD_INFO            * methodInfo,
-                                           void *                         * methodCodePtr,
-                                           ULONG                          * methodCodeSize,
-                                           CORJIT_FLAGS                   * compileFlags,
-                                           CorInfoInstantiationVerification instVerInfo)
+int           Compiler::compCompileHelper(CORINFO_MODULE_HANDLE            classPtr,
+    COMP_HANDLE                      compHnd,
+    CORINFO_METHOD_INFO            * methodInfo,
+    void *                         * methodCodePtr,
+    ULONG                          * methodCodeSize,
+    CORJIT_FLAGS                   * compileFlags,
+    CorInfoInstantiationVerification instVerInfo)
+{
+    CORINFO_METHOD_HANDLE methodHnd = info.compMethodHnd;
+
+    info.compCode = methodInfo->ILCode;
+    info.compILCodeSize = methodInfo->ILCodeSize;
+
+    if (info.compILCodeSize == 0)
+        BADCODE("code size is zero");
+
+    if (compIsForInlining())
     {
-        CORINFO_METHOD_HANDLE methodHnd = info.compMethodHnd;
-
-        info.compCode           = methodInfo->ILCode;
-        info.compILCodeSize     = methodInfo->ILCodeSize;
-
-        if (info.compILCodeSize == 0)
-            BADCODE("code size is zero");
-
-        if (compIsForInlining())
-        {          
 #ifdef DEBUG
-            unsigned methAttr_Old = impInlineInfo->inlineCandidateInfo->methAttr;
-            unsigned methAttr_New = info.compCompHnd->getMethodAttribs(info.compMethodHnd);
-            unsigned flagsToIgnore = CORINFO_FLG_DONT_INLINE | CORINFO_FLG_FORCEINLINE;
-            assert((methAttr_Old & (~flagsToIgnore)) == (methAttr_New & (~flagsToIgnore)));
+        unsigned methAttr_Old = impInlineInfo->inlineCandidateInfo->methAttr;
+        unsigned methAttr_New = info.compCompHnd->getMethodAttribs(info.compMethodHnd);
+        unsigned flagsToIgnore = CORINFO_FLG_DONT_INLINE | CORINFO_FLG_FORCEINLINE;
+        assert((methAttr_Old & (~flagsToIgnore)) == (methAttr_New & (~flagsToIgnore)));
 #endif
-            
-            info.compFlags = impInlineInfo->inlineCandidateInfo->methAttr;
-        }
-        else
-        {
-            info.compFlags = info.compCompHnd->getMethodAttribs(info.compMethodHnd);
-#ifdef PSEUDORANDOM_NOP_INSERTION
-            info.compChecksum = getMethodBodyChecksum((char*)methodInfo->ILCode, methodInfo->ILCodeSize);
-#endif
-        }
 
-        // compInitOptions will set the correct verbose flag.
-        
-        compInitOptions(compileFlags);
+        info.compFlags = impInlineInfo->inlineCandidateInfo->methAttr;
+    }
+    else
+    {
+        info.compFlags = info.compCompHnd->getMethodAttribs(info.compMethodHnd);
+#ifdef PSEUDORANDOM_NOP_INSERTION
+        info.compChecksum = getMethodBodyChecksum((char*)methodInfo->ILCode, methodInfo->ILCodeSize);
+#endif
+    }
+
+    // compInitOptions will set the correct verbose flag.
+
+    compInitOptions(compileFlags);
 
 #ifdef ALT_JIT
-        if (!compIsForInlining() && !opts.altJit)
-        {
-            // We're an altjit, but the COMPlus_AltJit configuration did not say to compile this method,
-            // so skip it.
-            return CORJIT_SKIPPED;  
-        }
+    if (!compIsForInlining() && !opts.altJit)
+    {
+        // We're an altjit, but the COMPlus_AltJit configuration did not say to compile this method,
+        // so skip it.
+        return CORJIT_SKIPPED;
+    }
 #endif // ALT_JIT
 
 #ifdef DEBUG
 
-        if (verbose)
-        {
-            printf("IL to import:\n");
-            dumpILRange(info.compCode, info.compILCodeSize);
-        }
+    if (verbose)
+    {
+        printf("IL to import:\n");
+        dumpILRange(info.compCode, info.compILCodeSize);
+    }
 
 #endif
 
-        // Check for COMPlus_AgressiveInlining
-        if (JitConfig.JitAggressiveInlining())
-        {
-            compDoAggressiveInlining = true;
-        }
- 
-        if (compDoAggressiveInlining)
-        {
-            info.compFlags |= CORINFO_FLG_FORCEINLINE;
-        }
+    // Check for COMPlus_AgressiveInlining
+    if (JitConfig.JitAggressiveInlining())
+    {
+        compDoAggressiveInlining = true;
+    }
+
+    if (compDoAggressiveInlining)
+    {
+        info.compFlags |= CORINFO_FLG_FORCEINLINE;
+    }
 
 #ifdef DEBUG
 
-        // Check for ForceInline stress.
-        if (compStressCompile(STRESS_FORCE_INLINE, 0))
-        {
-            info.compFlags |= CORINFO_FLG_FORCEINLINE;
-        }
+    // Check for ForceInline stress.
+    if (compStressCompile(STRESS_FORCE_INLINE, 0))
+    {
+        info.compFlags |= CORINFO_FLG_FORCEINLINE;
+    }
 
-        if (compIsForInlining())
-        {
-            JITLOG((LL_INFO100000, "\nINLINER impTokenLookupContextHandle for %s is 0x%p.\n", 
-                    eeGetMethodFullName(info.compMethodHnd),
-                    dspPtr(impTokenLookupContextHandle)));
-        }
+    if (compIsForInlining())
+    {
+        JITLOG((LL_INFO100000, "\nINLINER impTokenLookupContextHandle for %s is 0x%p.\n",
+            eeGetMethodFullName(info.compMethodHnd),
+            dspPtr(impTokenLookupContextHandle)));
+    }
 
-        // Force verification if asked to do so
-        if (JitConfig.JitForceVer())
-            tiVerificationNeeded = (instVerInfo == INSTVER_NOT_INSTANTIATION);
+    // Force verification if asked to do so
+    if (JitConfig.JitForceVer())
+        tiVerificationNeeded = (instVerInfo == INSTVER_NOT_INSTANTIATION);
 
-        if (tiVerificationNeeded)
-        {
-            JITLOG((LL_INFO10000, "tiVerificationNeeded initially set to true for %s\n", info.compFullName));
-        }
+    if (tiVerificationNeeded)
+    {
+        JITLOG((LL_INFO10000, "tiVerificationNeeded initially set to true for %s\n", info.compFullName));
+    }
 #endif // DEBUG
 
-        /* Since tiVerificationNeeded can be turned off in the middle of
-           compiling a method, and it might have caused blocks to be queued up
-           for reimporting, impCanReimport can be used to check for reimporting. */
+    /* Since tiVerificationNeeded can be turned off in the middle of
+       compiling a method, and it might have caused blocks to be queued up
+       for reimporting, impCanReimport can be used to check for reimporting. */
 
-        impCanReimport          = (tiVerificationNeeded || compStressCompile(STRESS_CHK_REIMPORT, 15));
-      
-        // Need security prolog/epilog callouts when there is a declarative security in the method.
-        tiSecurityCalloutNeeded = ((info.compFlags & CORINFO_FLG_NOSECURITYWRAP) == 0);
+    impCanReimport = (tiVerificationNeeded || compStressCompile(STRESS_CHK_REIMPORT, 15));
 
-        if (tiSecurityCalloutNeeded || (info.compFlags & CORINFO_FLG_SECURITYCHECK)) 
-        {            
-            // We need to allocate the security object on the stack 
-            // when the method being compiled has a declarative security 
-            // (i.e. when CORINFO_FLG_NOSECURITYWRAP is reset for the current method).
-            // This is also the case when we inject a prolog and epilog in the method.
-            opts.compNeedSecurityCheck = true;
-        }
+    // Need security prolog/epilog callouts when there is a declarative security in the method.
+    tiSecurityCalloutNeeded = ((info.compFlags & CORINFO_FLG_NOSECURITYWRAP) == 0);
 
-        /* Initialize set a bunch of global values */
+    if (tiSecurityCalloutNeeded || (info.compFlags & CORINFO_FLG_SECURITYCHECK))
+    {
+        // We need to allocate the security object on the stack 
+        // when the method being compiled has a declarative security 
+        // (i.e. when CORINFO_FLG_NOSECURITYWRAP is reset for the current method).
+        // This is also the case when we inject a prolog and epilog in the method.
+        opts.compNeedSecurityCheck = true;
+    }
 
-        info.compScopeHnd       = classPtr;
-        info.compXcptnsCount    = methodInfo->EHcount;
-        info.compMaxStack       = methodInfo->maxStack;
-        compHndBBtab            = NULL;
-        compHndBBtabCount       = 0;
-        compHndBBtabAllocCount  = 0;
+    /* Initialize set a bunch of global values */
 
-        info.compNativeCodeSize      = 0;
-        info.compTotalHotCodeSize    = 0;
-        info.compTotalColdCodeSize   = 0;
+    info.compScopeHnd = classPtr;
+    info.compXcptnsCount = methodInfo->EHcount;
+    info.compMaxStack = methodInfo->maxStack;
+    compHndBBtab = NULL;
+    compHndBBtabCount = 0;
+    compHndBBtabAllocCount = 0;
+
+    info.compNativeCodeSize = 0;
+    info.compTotalHotCodeSize = 0;
+    info.compTotalColdCodeSize = 0;
 
 #ifdef  DEBUG
-        compCurBB               = 0;
-        lvaTable                = 0;
+    compCurBB = 0;
+    lvaTable = 0;
 
-        // Reset node ID counter
-        compGenTreeID           = 0;
+    // Reset node ID counter
+    compGenTreeID = 0;
 #endif
 
-        /* Initialize emitter */
+    /* Initialize emitter */
 
-        if (!compIsForInlining())
-        {
-            codeGen->getEmitter()->emitBegCG(this, compHnd);
-        }
-        
-        info.compIsStatic       = (info.compFlags & CORINFO_FLG_STATIC) != 0;
+    if (!compIsForInlining())
+    {
+        codeGen->getEmitter()->emitBegCG(this, compHnd);
+    }
 
-        info.compIsContextful   = (info.compClassAttr & CORINFO_FLG_CONTEXTFUL) != 0;
+    info.compIsStatic = (info.compFlags & CORINFO_FLG_STATIC) != 0;
 
-        info.compPublishStubParam = (opts.eeFlags & CORJIT_FLG_PUBLISH_SECRET_PARAM) != 0;
+    info.compIsContextful = (info.compClassAttr & CORINFO_FLG_CONTEXTFUL) != 0;
 
-        switch (methodInfo->args.getCallConv())
-        {
-        case CORINFO_CALLCONV_VARARG:
-        case CORINFO_CALLCONV_NATIVEVARARG:
-            info.compIsVarArgs    = true;
-            break;
-        case CORINFO_CALLCONV_DEFAULT:
-            info.compIsVarArgs    = false;
-            break;
-        default:
-            BADCODE("bad calling convention");
-        }
-        info.compRetNativeType = info.compRetType         = JITtype2varType(methodInfo->args.retType);
+    info.compPublishStubParam = (opts.eeFlags & CORJIT_FLG_PUBLISH_SECRET_PARAM) != 0;
+
+    switch (methodInfo->args.getCallConv())
+    {
+    case CORINFO_CALLCONV_VARARG:
+    case CORINFO_CALLCONV_NATIVEVARARG:
+        info.compIsVarArgs = true;
+        break;
+    case CORINFO_CALLCONV_DEFAULT:
+        info.compIsVarArgs = false;
+        break;
+    default:
+        BADCODE("bad calling convention");
+    }
+    info.compRetNativeType = info.compRetType = JITtype2varType(methodInfo->args.retType);
 
 #if INLINE_NDIRECT
         info.compCallUnmanaged   = 0;
@@ -5766,14 +5766,18 @@ var_types Compiler::GetTypeFromClassificationAndSizes(SystemVClassificationType 
     return type;
 }
 
-// getEightByteType:
-//   Returns the type of the struct description and slot number of the eightbyte.
+//-------------------------------------------------------------------
+// GetEightByteType: Returns the type of eightbyte slot of a struct
 //
-// args:
-//   structDesc: struct classification description.
-//   slotNum: eightbyte slot number for the struct.
-//   
-var_types Compiler::getEightByteType(const SYSTEMV_AMD64_CORINFO_STRUCT_REG_PASSING_DESCRIPTOR& structDesc, unsigned slotNum)
+// Arguments:
+//   structDesc  -  struct classification description.
+//   slotNum     -  eightbyte slot number for the struct.
+//
+// Return Value:
+//    type of the eightbyte slot of the struct
+// 
+//static
+var_types Compiler::GetEightByteType(const SYSTEMV_AMD64_CORINFO_STRUCT_REG_PASSING_DESCRIPTOR& structDesc, unsigned slotNum)
 {
     var_types eightByteType = TYP_UNDEF;
     unsigned len = structDesc.eightByteSizes[slotNum];
@@ -5793,7 +5797,7 @@ var_types Compiler::getEightByteType(const SYSTEMV_AMD64_CORINFO_STRUCT_REG_PASS
         }
         else
         {
-            assert(false && "getEightByteType Invalid Integer classification type.");
+            assert(false && "GetEightByteType Invalid Integer classification type.");
         }
         break;
     case SystemVClassificationTypeIntegerReference:
@@ -5815,15 +5819,51 @@ var_types Compiler::getEightByteType(const SYSTEMV_AMD64_CORINFO_STRUCT_REG_PASS
         }
         else
         {
-            assert(false && "getEightByteType Invalid SSE classification type.");
+            assert(false && "GetEightByteType Invalid SSE classification type.");
         }
         break;
     default:
-        assert(false && "getEightByteType Invalid classification type.");
+        assert(false && "GetEightByteType Invalid classification type.");
         break;
     }
 
     return eightByteType;
+}
+
+//------------------------------------------------------------------------------------------------------
+// GetStructTypeOffset: Gets the type, size and offset of the eightbytes of a struct for System V systems.
+//
+// Arguments:
+//    'structDesc' -  struct description
+//    'type0'      -  out param; returns the type of the first eightbyte.
+//    'type1'      -  out param; returns the type of the second eightbyte.
+//    'offset0'    -  out param; returns the offset of the first eightbyte.
+//    'offset1'    -  out param; returns the offset of the second eightbyte.
+//
+//static
+void Compiler::GetStructTypeOffset(const SYSTEMV_AMD64_CORINFO_STRUCT_REG_PASSING_DESCRIPTOR& structDesc,
+                                   var_types* type0,
+                                   var_types* type1,
+                                   unsigned __int8* offset0,
+                                   unsigned __int8* offset1)
+{
+    *offset0 = structDesc.eightByteOffsets[0];
+    *offset1 = structDesc.eightByteOffsets[1];
+
+    *type0 = TYP_UNKNOWN;
+    *type1 = TYP_UNKNOWN;
+
+    // Set the first eightbyte data
+    if (structDesc.eightByteCount >= 1)
+    {
+        *type0 = GetEightByteType(structDesc, 0);
+    }
+
+    // Set the second eight byte data
+    if (structDesc.eightByteCount == 2)
+    {
+        *type1 = GetEightByteType(structDesc, 1);
+    }
 }
 #endif // defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
 

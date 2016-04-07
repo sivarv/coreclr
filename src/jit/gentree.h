@@ -2441,6 +2441,12 @@ public:
 
         return TYP_UNKNOWN;
     }
+
+    // Get ith ABI return register 
+    regNumber GetABIReturnReg(unsigned i);
+
+    // Get reg mask of ABI return registers 
+    regMaskTP GetABIReturnRegs();
 };
 
 struct GenTreeCall final : public GenTree
@@ -2463,9 +2469,33 @@ struct GenTreeCall final : public GenTree
 
     regMaskTP         gtCallRegUsedMask;      // mask of registers used to pass parameters
 
+    // For now Return Type Descriptor is enabled only for x64 unix.
+    // TODO: enable for all arch that support multi-reg returns (i.e. arm64/arm32/x86)
+    // TODO: enable for all call nodes to unify single-reg and multi-reg returns.
 #ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
     ReturnTypeDesc    gtReturnTypeDesc;
 #endif 
+
+    //-----------------------------------------------------------------------
+    // GetReturnTypeDesc: get the type descriptor of return value of the call
+    //
+    // Arguments:
+    //    None
+    //
+    // Returns
+    //    Type descriptor of the value returned by call
+    //
+    // Note:
+    //    Right now implemented only for x64 unix.
+    ReturnTypeDesc*   GetReturnTypeDesc()
+    {
+#ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
+        return &gtReturnTypeDesc;
+#else
+        return nullptr;
+#endif
+    }
+
 
 #define     GTF_CALL_M_EXPLICIT_TAILCALL       0x0001  // GT_CALL -- the call is "tail" prefixed and importer has performed tail call checks
 #define     GTF_CALL_M_TAILCALL                0x0002  // GT_CALL -- the call is a tailcall
@@ -2538,10 +2568,19 @@ struct GenTreeCall final : public GenTree
     // Returns true if the call has retBuf argument
     bool HasRetBufArg() const { return (gtCallMoreFlags & GTF_CALL_M_RETBUFFARG) != 0; }
 
-#ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
+
     // Returns true if the call is returning a multi-reg struct value
-    bool HasMultiRegRetVal() const { return varTypeIsStruct(gtType) && !HasRetBufArg(); }
+    // TODO: This is implemented only for x64 Unix and yet to be implemented for
+    // arm64/arm32/x86
+    bool HasMultiRegRetVal() const 
+    { 
+#ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
+        return varTypeIsStruct(gtType) && !HasRetBufArg(); 
+#else
+        return false;
 #endif
+    }
+
 
     // Returns true if VM has flagged this method as CORINFO_FLG_PINVOKE.
     bool IsPInvoke()                { return (gtCallMoreFlags & GTF_CALL_M_PINVOKE) != 0; }
