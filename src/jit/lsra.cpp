@@ -114,9 +114,30 @@ XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 */
 
-void lsraAssignRegToTree(GenTreePtr tree, regNumber reg)
+//--------------------------------------------------------------
+// lsraAssignRegToTree: Assign the given reg to tree node.
+//
+// Arguments:
+//    tree    -    Gentree node
+//    reg     -    register to be assigned
+//    regIdx  -    register idx, if tree is a multi-reg call node.
+//                 regIdx will be zero for single-reg result producing tree nodes.
+//
+// Return Value:
+//    None
+//
+void lsraAssignRegToTree(GenTreePtr tree, regNumber reg, unsigned regIdx)
 {
-    tree->gtRegNum  = reg;
+    if (regIdx == 0)
+    {
+        tree->gtRegNum = reg;
+    }
+    else
+    {
+        assert(tree->IsMultiRegCall());
+        GenTreeCall* call = tree->AsCall();
+        call->SetRegNumByIdx(reg, regIdx);
+    }
 }
 
 // allRegs represents a set of registers that can
@@ -135,6 +156,41 @@ regMaskTP LinearScan::allRegs(RegisterType rt)
 #endif // FEATURE_SIMD
     else 
         return availableIntRegs;
+}
+
+//--------------------------------------------------------------------------
+// allRegs: represents a set of registers that can
+// be used to allocate the specified type in any point
+// in time (more of a 'bank' of registers).
+//
+// Arguments:
+//    tree   -  GenTree node
+//
+// Return Value:
+//    Mask representing the set of available registers for given tree type
+regMaskTP LinearScan::allRegs(GenTree* tree)
+{
+    regMaskTP resultMask;
+
+    // In case of multi-reg calls, allRegs is defined as
+    // Bitwise-Or(allRegs(GetReturnRegType(i)) for i=0..ReturnRegCount-1
+    if (tree->IsMultiRegCall())
+    {
+        ReturnTypeDesc* retTypeDesc = tree->AsCall()->GetReturnTypeDesc();
+        resultMask = allRegs(retTypeDesc->GetReturnRegType(0));
+
+        unsigned count = retTypeDesc->GetReturnRegCount();
+        for (unsigned i = 1; i < count; ++i)
+        {
+            resultMask |= allRegs(retTypeDesc->GetReturnRegType(i));
+        }
+    }
+    else
+    {
+        resultMask = allRegs(tree->TypeGet());
+    }
+
+    return resultMask;
 }
 
 regMaskTP LinearScan::allSIMDRegs()
@@ -635,30 +691,66 @@ LinearScan::associateRefPosWithInterval(RefPosition *rp)
     }
 }
 
-RefPosition *
-LinearScan::newRefPosition(
-    regNumber reg, LsraLocation theLocation,
-    RefType theRefType, GenTree * theTreeNode,
-    regMaskTP mask)
+//---------------------------------------------------------------------------
+// newRefPosition: allocate and initialize a new RefPosition.
+//
+// Arguments:
+//     reg             -  reg number that identifies RegRecord to be associated 
+//                        with this RefPosition
+//     theLocation     -  LSRA location of RefPosition
+//     theRefType      -  RefPosition type
+//     theTreeNode     -  GenTree node for which this RefPosition is created
+//     mask            -  Set of valid registers for this RefPosition
+//     multiRegIdx     -  register position if this RefPosition corresponds to a
+//                        multi-reg call node.
+//
+// Return Value:
+//     a new RefPosition
+//                       
+RefPosition*
+LinearScan::newRefPosition(regNumber reg, 
+                           LsraLocation theLocation,
+                           RefType theRefType, 
+                           GenTree* theTreeNode,
+                           regMaskTP mask,
+                           unsigned multiRegIdx /* = 0 */)
 {
-    RefPosition *newRP = newRefPositionRaw(theLocation, theTreeNode, theRefType);
+    RefPosition* newRP = newRefPositionRaw(theLocation, theTreeNode, theRefType);
 
     newRP->setReg(getRegisterRecord(reg));
-
     newRP->registerAssignment = mask;
+
+    newRP->multiRegIdx = multiRegIdx;
+    assert(multiRegIdx == newRP->multiRegIdx);
+
     associateRefPosWithInterval(newRP);
 
     DBEXEC(VERBOSE, newRP->dump());
     return newRP;
 }
 
-
-
-RefPosition *
-LinearScan::newRefPosition(
-    Interval * theInterval, LsraLocation theLocation,
-    RefType theRefType, GenTree * theTreeNode,
-    regMaskTP mask)
+//---------------------------------------------------------------------------
+// newRefPosition: allocate and initialize a new RefPosition.
+//
+// Arguments:
+//     theInterval     -  interval to which RefPosition is associated with.
+//     theLocation     -  LSRA location of RefPosition
+//     theRefType      -  RefPosition type
+//     theTreeNode     -  GenTree node for which this RefPosition is created
+//     mask            -  Set of valid registers for this RefPosition
+//     multiRegIdx     -  register position if this RefPosition corresponds to a
+//                        multi-reg call node.
+//
+// Return Value:
+//     a new RefPosition
+//                       
+RefPosition*
+LinearScan::newRefPosition(Interval* theInterval, 
+                           LsraLocation theLocation,
+                           RefType theRefType, 
+                           GenTree* theTreeNode,
+                           regMaskTP mask,
+                           unsigned multiRegIdx /* = 0 */)
 {
 #ifdef DEBUG
     if (theInterval != nullptr && regType(theInterval->registerType) == FloatRegisterType)
@@ -686,12 +778,12 @@ LinearScan::newRefPosition(
     if (insertFixedRef)
     {
         regNumber physicalReg = genRegNumFromMask(mask);
-        RefPosition *pos = newRefPosition (physicalReg, theLocation,  RefTypeFixedReg, nullptr, mask);
+        RefPosition* pos = newRefPosition (physicalReg, theLocation,  RefTypeFixedReg, nullptr, mask);
         assert(theInterval != nullptr);
         assert((allRegs(theInterval->registerType) & mask) != 0);
     }
 
-    RefPosition *newRP = newRefPositionRaw(theLocation, theTreeNode, theRefType);
+    RefPosition* newRP = newRefPositionRaw(theLocation, theTreeNode, theRefType);
 
     newRP->setInterval(theInterval);
 
@@ -711,6 +803,9 @@ LinearScan::newRefPosition(
     }
 #endif // !_TARGET_AMD64_
     newRP->registerAssignment = mask;
+
+    newRP->multiRegIdx = multiRegIdx;
+    assert(multiRegIdx == newRP->multiRegIdx);
 
     associateRefPosWithInterval(newRP);
 
@@ -1685,7 +1780,7 @@ LinearScan::identifyCandidatesExceptionDataflow()
         unsigned varNum = compiler->lvaTrackedToVarNum[varIndex];
         LclVarDsc* varDsc = compiler->lvaTable + varNum;
 
-        compiler->lvaSetVarDoNotEnregister(varNum DEBUG_ARG(Compiler::DNER_LiveInOutOfHandler));
+        compiler->lvaSetVarDoNotEnregister(varNum DEBUGARG(Compiler::DNER_LiveInOutOfHandler));
 
         if (varTypeIsGC(varDsc))
         {
@@ -1841,13 +1936,13 @@ void LinearScan::identifyCandidates()
                 dner = Compiler::DNER_IsStruct;
             }
 #endif // DEBUG
-            compiler->lvaSetVarDoNotEnregister(lclNum DEBUG_ARG(dner));
+            compiler->lvaSetVarDoNotEnregister(lclNum DEBUGARG(dner));
         }
         else if (varDsc->lvPinned)
         {
             varDsc->lvTracked  = 0;
 #ifdef JIT32_GCENCODER
-            compiler->lvaSetVarDoNotEnregister(lclNum DEBUG_ARG(Compiler::DNER_PinningRef));
+            compiler->lvaSetVarDoNotEnregister(lclNum DEBUGARG(Compiler::DNER_PinningRef));
 #endif // JIT32_GCENCODER
         }
 
@@ -1857,7 +1952,7 @@ void LinearScan::identifyCandidates()
         //
         if  (compiler->opts.MinOpts() && compiler->compHndBBtabCount > 0)
         {
-            compiler->lvaSetVarDoNotEnregister(lclNum DEBUG_ARG(Compiler::DNER_LiveInOutOfHandler));
+            compiler->lvaSetVarDoNotEnregister(lclNum DEBUGARG(Compiler::DNER_LiveInOutOfHandler));
             varDsc->lvLRACandidate = 0;
             continue;
         }
@@ -2478,19 +2573,7 @@ LinearScan::getKillSetForNode(GenTree* tree)
         }
         break;
     case GT_RETURNTRAP:
-        // if there is no FP used, we can ignore the FP kills
-        if (compiler->compFloatingPointUsed)
-        {
-            killMask = RBM_CALLEE_TRASH;
-        }
-        else
-        {
-            killMask = RBM_INT_CALLEE_TRASH;
-        }
-#if defined(_TARGET_AMD64_) || defined (_TARGET_ARM_)
-        // AMD (and ARM) helpers for this save the return value
-        killMask &= ~(RBM_INTRET | RBM_FLOATRET);
-#endif
+        killMask = compiler->compHelperCallKillSet(CORINFO_HELP_STOP_FOR_GC);
         break;
     case GT_CALL:
         // if there is no FP used, we can ignore the FP kills
@@ -2543,33 +2626,6 @@ LinearScan::getKillSetForNode(GenTree* tree)
         break;
 #endif // PROFILING_SUPPORTED && _TARGET_AMD64_
 
-#if FEATURE_MULTIREG_ARGS
-#ifdef _TARGET_ARM64_
-    case GT_PUTARG_REG:
-        // TODO-Cleanup: Remove this code after Issue #3524 is complete
-        // 
-        // Handle the 16-byte pass-by-value TYP_STRUCT for ARM64
-        // We actually write a second register that isn't being properly tracked
-        // We can prevent anyone else from being alive at this point by adding
-        // an extra RefTypeKill for the second register.
-        //
-        if (tree->TypeGet() == TYP_STRUCT)
-        {
-            TreeNodeInfo info    = tree->gtLsraInfo;
-            regMaskTP    dstMask = info.getDstCandidates(this);
-
-            // Make sure that the dstMask represents two consecutive registers
-            regMaskTP lowRegBit  = genFindLowestBit(dstMask);
-            regMaskTP nextRegBit = lowRegBit << 1;
-            regMaskTP regPairMask = (lowRegBit | nextRegBit);
-
-            assert(dstMask == regPairMask); 
-
-            killMask = nextRegBit;  // setup killMask to be the mask for the second register.
-        }
-#endif // _TARGET_ARM64_
-#endif  // FEATURE_MULTIREG_ARGS
-
     default:
         // for all other 'tree->OperGet()' kinds, leave 'killMask' = RBM_NONE
         break;
@@ -2612,7 +2668,7 @@ LinearScan::buildKillPositionsForNode(GenTree*     tree,
         // CORINFO_HELP_ASSIGN_BYREF helper, which kills callee-saved RSI and RDI, if
         // LSRA doesn't assign RSI/RDI, they wouldn't get marked as modified until codegen,
         // which is too late.
-        compiler->codeGen->regSet.rsSetRegsModified(killMask DEBUG_ARG(dumpTerse));
+        compiler->codeGen->regSet.rsSetRegsModified(killMask DEBUGARG(dumpTerse));
 
         addRefsForPhysRegMask(killMask, currentLoc, RefTypeKill, true);
 
@@ -3088,14 +3144,14 @@ LinearScan::buildRefPositionsForNode(GenTree *tree,
 
         // for interstitial tree temps, a use is always last and end;
         // this is  set by default in newRefPosition
-        GenTree * useNode = locInfo.treeNode;
+        GenTree* useNode = locInfo.treeNode;
         assert(useNode != nullptr);
         var_types type = useNode->TypeGet();
         regMaskTP candidates = getUseCandidates(useNode);
-        Interval *i = locInfo.interval;
+        Interval* i = locInfo.interval;
 
 #ifdef FEATURE_SIMD
-        if (tree->OperIsLocalStore() && varDefInterval == nullptr)
+        if (tree->OperIsLocalStore() && !useNode->IsMultiRegCall() && varDefInterval == nullptr)
         {
             // This is a non-candidate store.  If this is a SIMD type, the use candidates
             // may not match the type of the tree node.  If that is the case, change the
@@ -3169,7 +3225,6 @@ LinearScan::buildRefPositionsForNode(GenTree *tree,
     buildInternalRegisterUsesForNode(tree, currentLoc, internalRefs, internalCount);
 
     RegisterType registerType = getDefType(tree);
-
     regMaskTP candidates = getDefCandidates(tree);
     regMaskTP useCandidates = getUseCandidates(tree);
 
@@ -3184,52 +3239,49 @@ LinearScan::buildRefPositionsForNode(GenTree *tree,
     }
 #endif // DEBUG
 
-    int targetRegs = produce;
-
 #if defined(_TARGET_AMD64_)
-    assert(produce <= 1);
+    // Multi-reg call node is the only node that could produce multi-reg value
+    assert(produce <= 1 || (tree->IsMultiRegCall() && produce == MAX_RET_REG_COUNT));
 #elif defined(_TARGET_ARM_)
     assert(!varTypeIsMultiReg(tree->TypeGet()));
 #endif // _TARGET_xxx_
 
+    // Add kill positions before adding def positions
+    buildKillPositionsForNode(tree, currentLoc + 1);
+
 #if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
     VARSET_TP       VARSET_INIT_NOCOPY(liveLargeVectors, VarSetOps::UninitVal());
-#endif // FEATURE_PARTIAL_SIMD_CALLEE_SAVE
-
-    // push defs
-    if (produce == 0)
+    if (RBM_FLT_CALLEE_SAVED != RBM_NONE)
     {
-        buildKillPositionsForNode(tree, currentLoc + 1);
-
-#if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
-        if (RBM_FLT_CALLEE_SAVED != RBM_NONE)
-        {
-            // Build RefPositions for saving any live large vectors.
-            // This must be done after the kills, so that we know which large vectors are still live.
-            VarSetOps::AssignNoCopy(compiler, liveLargeVectors, buildUpperVectorSaveRefPositions(tree, currentLoc));
-        }
+        // Build RefPositions for saving any live large vectors.
+        // This must be done after the kills, so that we know which large vectors are still live.
+        VarSetOps::AssignNoCopy(compiler, liveLargeVectors, buildUpperVectorSaveRefPositions(tree, currentLoc));
+    }
 #endif // FEATURE_PARTIAL_SIMD_CALLEE_SAVE
+    
+    ReturnTypeDesc* retTypeDesc = nullptr;
+    bool isMultiRegCall = tree->IsMultiRegCall();
+    if (isMultiRegCall)
+    {
+        retTypeDesc = tree->AsCall()->GetReturnTypeDesc();
+        assert((int)genCountBits(candidates) == produce);
+        assert(candidates == retTypeDesc->GetABIReturnRegs());
     }
 
+    // push defs
     for (int i=0; i < produce; i++)
-    {
+    {        
         LsraLocation lastDefLocation = currentLoc + 1;
-
-        // If this is the last def add the phys reg defs
-        bool generatedKills = false;
-        if (i == produce-1) 
-        {
-            generatedKills = buildKillPositionsForNode(tree, lastDefLocation);
-
-#if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
-            // Build RefPositions for saving any live large vectors.
-            // This must be done after the kills, so that we know which large vectors are still live.
-            VarSetOps::AssignNoCopy(compiler, liveLargeVectors, buildUpperVectorSaveRefPositions(tree, currentLoc));
-#endif // FEATURE_PARTIAL_SIMD_CALLEE_SAVE
-        }
         regMaskTP currCandidates = candidates;
-
         Interval *interval = varDefInterval;
+
+        if (isMultiRegCall)
+        {
+            registerType = retTypeDesc->GetReturnRegType((unsigned)i);
+            currCandidates = genRegMask(retTypeDesc->GetABIReturnReg(i));
+            useCandidates = allRegs(registerType);
+        }
+
         if (interval == nullptr)
         {
             // Make a new interval
@@ -3243,10 +3295,12 @@ LinearScan::buildRefPositionsForNode(GenTree *tree,
                 assert(!tree->IsReuseRegVal());
                 interval->isConstant = true;
             }
+
             if ((currCandidates & useCandidates) != RBM_NONE)
             {
                 interval->updateRegisterPreferences(currCandidates & useCandidates);
             }
+
             if (isSpecialPutArg)
             {
                 interval->isSpecialPutArg = true;
@@ -3269,8 +3323,9 @@ LinearScan::buildRefPositionsForNode(GenTree *tree,
             stack->Push(LocationInfo(lastDefLocation, interval, tree));
         }
 
+        // TODO-Review: why defLocation different for last RefPosition?
         LsraLocation defLocation = (i == produce-1) ? lastDefLocation : currentLoc;
-        RefPosition *pos = newRefPosition(interval, defLocation, defRefType, defNode, currCandidates);
+        RefPosition* pos = newRefPosition(interval, defLocation, defRefType, defNode, currCandidates, (unsigned)i);
         if (info.isLocalDefUse)
         {
             pos->isLocalDefUse = true;
@@ -3280,6 +3335,7 @@ LinearScan::buildRefPositionsForNode(GenTree *tree,
         interval->updateRegisterPreferences(currCandidates);
         interval->updateRegisterPreferences(useCandidates);
     }
+
 #if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
     buildUpperVectorRestoreRefPositions(tree, currentLoc, liveLargeVectors);
 #endif // FEATURE_PARTIAL_SIMD_CALLEE_SAVE
@@ -3483,7 +3539,7 @@ LinearScan::updateRegStateForArg(LclVarDsc* argDsc)
 //                                    the register locations will be "rotated" to stress the resolution and allocation code.
 
 BasicBlock*
-LinearScan::findPredBlockForLiveIn(BasicBlock* block, BasicBlock* prevBlock DEBUG_ARG(bool* pPredBlockIsAllocated))
+LinearScan::findPredBlockForLiveIn(BasicBlock* block, BasicBlock* prevBlock DEBUGARG(bool* pPredBlockIsAllocated))
 {
     BasicBlock* predBlock = nullptr;
 #ifdef DEBUG
@@ -3729,7 +3785,7 @@ LinearScan::buildIntervals()
         JITDUMP("\nNEW BLOCK BB%02u\n", block->bbNum);
 
         bool predBlockIsAllocated = false;
-        predBlock = findPredBlockForLiveIn(block, prevBlock DEBUG_ARG(&predBlockIsAllocated));
+        predBlock = findPredBlockForLiveIn(block, prevBlock DEBUGARG(&predBlockIsAllocated));
 
         if (block == compiler->fgFirstBB)
         {
@@ -4567,54 +4623,6 @@ LinearScan::tryAllocateFreeReg(Interval *currentInterval, RefPosition *refPositi
         singleReg = genRegNumFromMask(candidates);
         regOrder = &singleReg;
     }
-#if FEATURE_MULTIREG_ARGS
-#ifdef _TARGET_ARM64_
-    // TODO-Cleanup: Remove this code after Issue #3524 is complete
-    //
-    // Handle the 16-byte pass-by-value TYP_STRUCT for ARM64
-    if (regType == TYP_STRUCT)
-    {
-        // We currently use two consecutive registers:
-        //    to pass in argument registers or
-        //    to load and the store into the outgoing arg space
-
-        // TODO: revisit this and remove the limitation that we use two consecutive registers.
-
-        // Make sure that we have two consecutive registers available
-        regMaskTP lowRegBit  = genFindLowestBit(candidates);
-        regMaskTP nextRegBit = lowRegBit << 1;
-        regMaskTP regPairMask = (lowRegBit | nextRegBit);
-        
-        do {
-            // Are there two consecutive register bits available?
-            if ((candidates & regPairMask) == regPairMask)
-            {
-                // We use the same trick as above when regOrderSize, singleReg and regOrder are set 
-                regOrderSize = 1;
-                singleReg = genRegNumFromMask(lowRegBit);
-                regOrder = &singleReg;
-                break;
-            }
-            // setup the next register pair bit
-            lowRegBit  = nextRegBit;
-            nextRegBit = lowRegBit << 1;  // shift left by one bit
-            regPairMask = (lowRegBit | nextRegBit);
-
-        } while (nextRegBit != 0);  // If we shifted out all of the bits then nextRegBit will become zero
-        // Note that shifting out all of the bits is an error, and we catch it with the following noway_assert
-
-        // Make sure we took the break to exit the while loop            
-        noway_assert(singleReg != REG_NA);
-
-        // Unless we setup singleReg we have to issue an NYI error here
-        if (singleReg == REG_NA)
-        {
-            // Need support for MultiReg sized structs
-            NYI("Multireg struct - LinearScan::tryAllocateFreeReg");
-        }
-    }
-#endif  // _TARGET_ARM64_
-#endif // FEATURE_MULTIREG_ARGS
     
     for (unsigned i = 0; i < regOrderSize && (candidates != RBM_NONE); i++)
     {
@@ -5101,7 +5109,7 @@ void LinearScan::checkAndAssignInterval( RegRecord * regRec, Interval * interval
 void LinearScan::assignPhysReg( RegRecord * regRec, Interval * interval)
 {
     regMaskTP assignedRegMask = genRegMask(regRec->regNum);
-    compiler->codeGen->regSet.rsSetRegsModified(assignedRegMask DEBUG_ARG(dumpTerse));
+    compiler->codeGen->regSet.rsSetRegsModified(assignedRegMask DEBUGARG(dumpTerse));
 
     checkAndAssignInterval(regRec, interval);
     interval->assignedReg = regRec;
@@ -5115,23 +5123,6 @@ void LinearScan::assignPhysReg( RegRecord * regRec, Interval * interval)
         checkAndAssignInterval(nextRegRec, interval);
     }
 #endif // _TARGET_ARM_
-
-#if FEATURE_MULTIREG_ARGS_OR_RET
-#ifdef _TARGET_ARM64_
-    // TODO-Cleanup: Remove this code after Issue #3524 is complete
-    // Handle the 16-byte pass-by-value TYP_STRUCT for ARM64
-    if (interval->registerType == TYP_STRUCT)
-    {
-        // We use two consecutive registers:
-        //    to pass in argument registers or
-        //    to load and the store into the outgoing arg space
-        regNumber   nextRegNum = REG_NEXT(regRec->regNum);
-        RegRecord * nextRegRec = getRegisterRecord(nextRegNum);
-
-        checkAndAssignInterval(nextRegRec, interval);
-    }
-#endif //  _TARGET_ARM64_
-#endif // FEATURE_MULTIREG_ARGS_OR_RET
 
     interval->physReg = regRec->regNum;
     interval->isActive = true;
@@ -5292,24 +5283,6 @@ void LinearScan::unassignPhysReg( RegRecord * regRec, RefPosition* spillRefPosit
         checkAndClearInterval(nextRegRec, spillRefPosition);
     }
 #endif // _TARGET_ARM_
-
-#if FEATURE_MULTIREG_ARGS_OR_RET
-#ifdef _TARGET_ARM64_
-    // TODO-Cleanup: Remove this code after Issue #3524 is complete
-    // Handle the 16-byte pass-by-value TYP_STRUCT for ARM64
-    if (assignedInterval->registerType == TYP_STRUCT)
-    {
-
-        // We use two consecutive registers:
-        //    to pass in argument registers or
-        //    to load and the store into the outgoing arg space
-
-        regNumber   nextRegNum = REG_NEXT(regRec->regNum);
-        RegRecord * nextRegRec = getRegisterRecord(nextRegNum);
-        checkAndClearInterval(nextRegRec, spillRefPosition);
-    }
-#endif //  _TARGET_ARM64_
-#endif // FEATURE_MULTIREG_ARGS_OR_RET
 
 #ifdef DEBUG
     if (VERBOSE && !dumpTerse)
@@ -6861,7 +6834,7 @@ LinearScan::resolveLocalRef(GenTreePtr treeNode, RefPosition * currentRefPositio
 void
 LinearScan::writeRegisters(RefPosition *currentRefPosition, GenTree *tree)
 {
-    lsraAssignRegToTree(tree, currentRefPosition->assignedReg());
+    lsraAssignRegToTree(tree, currentRefPosition->assignedReg(), currentRefPosition->getMultiRegIdx());
 }
 
 //------------------------------------------------------------------------ 
@@ -7182,6 +7155,18 @@ LinearScan::updateMaxSpill(RefPosition* refPosition)
                     treeNode = interval->firstRefPosition->treeNode;
                 }
                 assert(treeNode != nullptr);
+
+                // In case of multi-reg call nodes, we need to use the type
+                // of the return register given by multiRegIdx of the refposition.
+                if (treeNode->IsMultiRegCall())
+                {
+                    ReturnTypeDesc* retTypeDesc = treeNode->AsCall()->GetReturnTypeDesc();
+                    typ = retTypeDesc->GetReturnRegType(refPosition->getMultiRegIdx());                        
+                }
+                else
+                {
+                    typ = treeNode->TypeGet();
+                }
                 typ = compiler->tmpNormalizeType(treeNode->TypeGet());
             }
 
@@ -7505,17 +7490,24 @@ LinearScan::resolveRegisters()
                         if (currentRefPosition->spillAfter)
                         {
                             treeNode->gtFlags |= GTF_SPILL;
+
                             // If this is a constant interval that is reusing a pre-existing value, we actually need
                             // to generate the value at this point in order to spill it.
                             if (treeNode->IsReuseRegVal())
                             {
                                 treeNode->ResetReuseRegVal();
                             }
+
+                            if (treeNode->IsMultiRegCall())
+                            {
+                                GenTreeCall* call = treeNode->AsCall();
+                                call->SetRegSpillFlagByIdx(GTF_SPILL, currentRefPosition->getMultiRegIdx());
+                            }
                         }
 
                         // If the value is reloaded or moved to a different register, we need to insert
                         // a node to hold the register to which it should be reloaded
-                        RefPosition * nextRefPosition = currentRefPosition->nextRefPosition;
+                        RefPosition* nextRefPosition = currentRefPosition->nextRefPosition;
                         assert(nextRefPosition != nullptr);
                         if (INDEBUG(alwaysInsertReload() ||)
                             nextRefPosition->assignedReg() != currentRefPosition->assignedReg())
@@ -8771,7 +8763,7 @@ LinearScan::resolveEdge(BasicBlock*      fromBlock,
                 }
                 else
                 {
-                    compiler->codeGen->regSet.rsSetRegsModified(genRegMask(tempReg) DEBUG_ARG(dumpTerse));
+                    compiler->codeGen->regSet.rsSetRegsModified(genRegMask(tempReg) DEBUGARG(dumpTerse));
                     assert(sourceIntervals[targetReg] != nullptr);
                     addResolution(block, insertionPoint, sourceIntervals[targetReg], tempReg, targetReg);
                     JITDUMP(" (%s)\n", resolveTypeName[resolveType]);

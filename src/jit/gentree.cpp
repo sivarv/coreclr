@@ -1091,9 +1091,15 @@ Compiler::fgWalkResult  Compiler::fgWalkTree(GenTreePtr  * pTree,
     return result;
 }
 
-// Sets the register to the "no register assignment" value, depending upon the type
-// of the node, and whether it fits any of the special cases for register pairs.
-
+// ------------------------------------------------------------------------------------------
+// gtClearReg: Sets the register to the "no register assignment" value, depending upon
+// the type of the node, and whether it fits any of the special cases for register pairs.
+//
+// Arguments:
+//     compiler  -  compiler instance
+//
+// Return Value:
+//     None
 void
 GenTree::gtClearReg(Compiler* compiler)
 {
@@ -1109,6 +1115,101 @@ GenTree::gtClearReg(Compiler* compiler)
     {
         gtRegNum = REG_NA;
     }
+
+    // Also clear multi-reg state if this is a call node
+    if (IsCall())
+    {
+        this->AsCall()->ClearOtherRegs();
+    }
+}
+
+//-----------------------------------------------------------
+// CopyReg: Copy the _gtRegNum/_gtRegPair/gtRegTag fields.
+//
+// Arguments:
+//     from   -  GenTree node from which to copy
+//
+// Return Value:
+//     None
+void 
+GenTree::CopyReg(GenTreePtr from)
+{
+    // To do the copy, use _gtRegPair, which must be bigger than _gtRegNum. Note that the values
+    // might be undefined (so gtRegTag == GT_REGTAG_NONE).
+    _gtRegPair = from->_gtRegPair;
+    C_ASSERT(sizeof(_gtRegPair) >= sizeof(_gtRegNum));
+    INDEBUG(gtRegTag = from->gtRegTag;)
+
+    // Also copy multi-reg state if this is a call node
+    if (IsCall())
+    {
+        assert(from->IsCall());
+        this->AsCall()->CopyOtherRegs(from->AsCall());
+    }
+}
+
+//---------------------------------------------------------------
+// gtGetRegMask: Get the reg mask of the node.
+//
+// Arguments:
+//    None
+//
+// Return Value:
+//    Reg Mask of GenTree node.
+//
+regMaskTP 
+GenTree::gtGetRegMask() const
+{
+    regMaskTP resultMask;
+
+#if CPU_LONG_USES_REGPAIR
+    if (isRegPairType(TypeGet()))
+    {
+        resultMask = genRegPairMask(gtRegPair);
+    }
+    else
+#endif
+    {
+        resultMask = genRegMask(gtRegNum);
+    }
+
+    if (IsCall())
+    {
+        // temporarily cast away const-ness as AsCall() method is not declared const
+        GenTree* temp = const_cast<GenTree*>(this);
+        resultMask |= temp->AsCall()->GetOtherRegMask();
+    }
+
+    return resultMask;
+}
+
+//---------------------------------------------------------------
+// GetOtherRegMask: Get the reg mask of gtOtherRegs of call node
+//
+// Arguments:
+//    None
+//
+// Return Value:
+//    Reg mask of gtOtherRegs of call node.
+//
+regMaskTP  
+GenTreeCall::GetOtherRegMask() const
+{
+    regMaskTP resultMask = RBM_NONE;
+
+#ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
+    for (unsigned i = 0; i < MAX_RET_REG_COUNT - 1; ++i)
+    {
+        if (genIsValidReg(gtOtherRegs[i]))
+        {
+            resultMask |= genRegMask(gtOtherRegs[i]);
+            continue;
+        }
+        break;
+    }
+#endif
+
+    return resultMask;
 }
 
 /*****************************************************************************
@@ -5008,10 +5109,10 @@ GenTreePtr          Compiler::gtNewSconNode(int CPX, CORINFO_MODULE_HANDLE scpHa
     assert(GenTree::s_gtNodeSizes[GT_CALL] > GenTree::s_gtNodeSizes[GT_CNS_STR]);
 
     GenTreePtr      node = new(this, GT_CALL) GenTreeStrCon(CPX, scpHandle 
-                                                            DEBUG_ARG(/*largeNode*/true));
+                                                            DEBUGARG(/*largeNode*/true));
 #else
     GenTreePtr      node = new(this, GT_CNS_STR) GenTreeStrCon(CPX, scpHandle
-                                                               DEBUG_ARG(/*largeNode*/true));
+                                                               DEBUGARG(/*largeNode*/true));
 #endif
 
     return node;
@@ -5163,6 +5264,9 @@ GenTreeCall*          Compiler::gtNewCallNode(gtCallTypes     callType,
     }
 #endif
 
+    // Initialize gtOtherRegs 
+    node->ClearOtherRegs();
+
     return node;
 }
 
@@ -5203,10 +5307,10 @@ GenTreePtr          Compiler::gtNewLclLNode(unsigned   lnum,
 //    assert(GenTree::s_gtNodeSizes[GT_CALL] > GenTree::s_gtNodeSizes[GT_LCL_VAR]);
 
     GenTreePtr node = new(this, GT_CALL) GenTreeLclVar(type, lnum, ILoffs
-                                                       DEBUG_ARG(/*largeNode*/true));
+                                                       DEBUGARG(/*largeNode*/true));
 #else
     GenTreePtr node = new(this, GT_LCL_VAR) GenTreeLclVar(type, lnum, ILoffs
-                                                          DEBUG_ARG(/*largeNode*/true));
+                                                          DEBUGARG(/*largeNode*/true));
 #endif
 
     return node;
@@ -5391,7 +5495,7 @@ bool  Compiler::gtArgIsThisPtr(fgArgTabEntryPtr argEntry)
  *  Create a node that will assign 'src' to 'dst'.
  */
 
-GenTreePtr          Compiler::gtNewAssignNode(GenTreePtr dst, GenTreePtr src DEBUG_ARG(bool isPhiDefn))
+GenTreePtr          Compiler::gtNewAssignNode(GenTreePtr dst, GenTreePtr src DEBUGARG(bool isPhiDefn))
 {
     var_types type = dst->TypeGet();
 
@@ -6007,7 +6111,7 @@ GenTreePtr          Compiler::gtCloneExpr(GenTree * tree,
 
         case GT_CAST:
             copy = new (this, LargeOpOpcode()) GenTreeCast(tree->TypeGet(), tree->gtCast.CastOp(), tree->gtCast.gtCastType
-                                                           DEBUG_ARG(/*largeNode*/TRUE));
+                                                           DEBUGARG(/*largeNode*/TRUE));
             break;
 
             // The nodes below this are not bashed, so they can be allocated at their individual sizes.
@@ -7657,6 +7761,18 @@ void                Compiler::gtDispRegVal(GenTree *  tree)
 
     default: 
         break;
+    }
+
+    if (tree->IsMultiRegCall())
+    {
+        // 0th reg is gtRegNum, which is already printed above.
+        // Print the remaining regs of a multi-reg call node.
+        GenTreeCall* call = tree->AsCall();
+        unsigned regCount = call->GetReturnTypeDesc()->GetReturnRegCount();
+        for (unsigned i = 1; i < regCount; ++i)
+        {
+            printf(",%s", compRegVarName(call->GetRegNumByIdx(i)));
+        }        
     }
 
     if  (tree->gtFlags & GTF_REG_VAL)
@@ -9760,6 +9876,11 @@ GenTreePtr                  Compiler::gtFoldExprConst(GenTreePtr tree)
         return tree;
     }
 
+    if (tree->OperGet() == GT_NOP)
+    {
+        return tree;
+    }
+
 #ifdef FEATURE_SIMD
     if (tree->OperGet() == GT_SIMD)
     {
@@ -9776,6 +9897,7 @@ GenTreePtr                  Compiler::gtFoldExprConst(GenTreePtr tree)
         case TYP_INT:
 
             /* Fold constant INT unary operator */
+            assert(op1->gtIntCon.ImmedValCanBeFolded(this, tree->OperGet()));
             i1 = (int) op1->gtIntCon.gtIconVal;
 
             // If we fold a unary oper, then the folded constant 
@@ -9890,6 +10012,7 @@ CHK_OVF:
 
             /* Fold constant LONG unary operator */
 
+            assert(op1->gtIntConCommon.ImmedValCanBeFolded(this, tree->OperGet()));
             lval1 = op1->gtIntConCommon.LngValue();
 
             switch (tree->gtOper)
@@ -10214,6 +10337,9 @@ CHK_OVF:
         //
         assert(!varTypeIsGC(op1->gtType) && !varTypeIsGC(op2->gtType));
 
+        assert(op1->gtIntConCommon.ImmedValCanBeFolded(this, tree->OperGet()));
+        assert(op2->gtIntConCommon.ImmedValCanBeFolded(this, tree->OperGet()));
+
         i1 = op1->gtIntConCommon.IconValue();
         i2 = op2->gtIntConCommon.IconValue();
 
@@ -10535,6 +10661,9 @@ OVF:
         // op1 is known to be a TYP_LONG, op2 is normally a TYP_LONG, unless we have a shift operator in which case it is a TYP_INT
         //
         assert((op2->gtType == TYP_LONG) || (op2->gtType == TYP_INT));
+
+        assert(op1->gtIntConCommon.ImmedValCanBeFolded(this, tree->OperGet()));
+        assert(op2->gtIntConCommon.ImmedValCanBeFolded(this, tree->OperGet()));
 
         lval1 = op1->gtIntConCommon.LngValue();
         
@@ -12571,6 +12700,42 @@ size_t GenTreeIndir::Offset()
         return 0;
 }
 
+//------------------------------------------------------------------------
+// GenTreeIntConCommon::ImmedValNeedsReloc: does this immediate value needs recording a relocation with the VM?
+//
+// Arguments:
+//    comp - Compiler instance
+//
+// Return Value:
+//    True if this immediate value needs recording a relocation with the VM; false otherwise.
+
+bool GenTreeIntConCommon::ImmedValNeedsReloc(Compiler* comp)
+{
+#ifdef RELOC_SUPPORT
+    return comp->opts.compReloc && (gtOper == GT_CNS_INT) && IsIconHandle();
+#else
+    return false;
+#endif
+}
+
+//------------------------------------------------------------------------
+// ImmedValCanBeFolded: can this immediate value be folded for op?
+//
+// Arguments:
+//    comp - Compiler instance
+//    op - Tree operator
+//
+// Return Value:
+//    True if this immediate value can be folded for op; false otherwise.
+
+bool GenTreeIntConCommon::ImmedValCanBeFolded(Compiler* comp, genTreeOps op)
+{
+    // In general, immediate values that need relocations can't be folded.
+    // There are cases where we do want to allow folding of handle comparisons
+    // (e.g., typeof(T) == typeof(int)).
+    return !ImmedValNeedsReloc(comp) || (op == GT_EQ) || (op == GT_NE);
+}
+
 #ifdef _TARGET_AMD64_
 // Returns true if this absolute address fits within the base of an addr mode.
 // On Amd64 this effectively means, whether an absolute indirect address can
@@ -12616,12 +12781,6 @@ bool GenTreeIntConCommon::FitsInAddrBase(Compiler* comp)
     }    
 }
 
-// Returns true if this icon value is encoded as immediate value needs recording a relocation with VM
-bool GenTreeIntConCommon::ImmedValNeedsReloc(Compiler* comp)
-{
-    return comp->opts.compReloc && IsIconHandle();
-}
-
 // Returns true if this icon value is encoded as addr needs recording a relocation with VM
 bool GenTreeIntConCommon::AddrNeedsReloc(Compiler* comp)
 {
@@ -12655,12 +12814,6 @@ bool GenTreeIntConCommon::FitsInAddrBase(Compiler* comp)
     //TODO-x86 - TLS field handles are excluded for now as they are accessed relative to FS segment.
     //Handling of TLS field handles is a NYI and this needs to be relooked after implementing it.
     return IsCnsIntOrI() && !IsIconHandle(GTF_ICON_TLS_HDL);
-}
-
-// Returns true if this icon value is encoded as immediate value needs recording a relocation with VM
-bool GenTreeIntConCommon::ImmedValNeedsReloc(Compiler* comp)
-{
-    return comp->opts.compReloc && IsIconHandle();
 }
 
 // Returns true if this icon value is encoded as addr needs recording a relocation with VM

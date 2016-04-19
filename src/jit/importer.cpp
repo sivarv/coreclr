@@ -67,21 +67,6 @@ void                Compiler::impInit()
 #endif
 
     seenConditionalJump = false;  
-       
-#ifndef DEBUG
-    impInlineSize = DEFAULT_MAX_INLINE_SIZE;
-#else
-    impInlineSize = JitConfig.JitInlineSize();
-
-    if (compInlineStress())
-        impInlineSize *= 10;
-
-    if (impInlineSize > IMPLEMENTATION_MAX_INLINE_SIZE)
-        impInlineSize = IMPLEMENTATION_MAX_INLINE_SIZE;
-
-    assert(impInlineSize >= ALWAYS_INLINE_SIZE);
-    assert(impInlineSize <= IMPLEMENTATION_MAX_INLINE_SIZE);
-#endif
 }
 
 /*****************************************************************************
@@ -1597,7 +1582,7 @@ GenTreePtr          Compiler::impLookupToTree(CORINFO_LOOKUP *pLookup, unsigned 
 
         CORINFO_GENERIC_HANDLE handle = 0;
         void *pIndirection = 0;
-        _ASSERTE(pLookup->constLookup.accessType != IAT_PPVALUE);
+        assert(pLookup->constLookup.accessType != IAT_PPVALUE);
 
         if (pLookup->constLookup.accessType == IAT_VALUE)
             handle = pLookup->constLookup.handle;
@@ -1821,7 +1806,7 @@ GenTreePtr          Compiler::impRuntimeLookupToTree(CORINFO_RUNTIME_LOOKUP_KIND
         return gtNewLclvNode(tmp, TYP_I_IMPL);
     }
 
-    _ASSERTE(pLookup->indirections != 0);
+    assert(pLookup->indirections != 0);
 
     impSpillSideEffects(true, CHECK_SPILL_ALL DEBUGARG("bubbling QMark1"));  
     
@@ -2636,12 +2621,12 @@ GenTreePtr  Compiler::impImplicitIorI4Cast(GenTreePtr  tree,
 GenTreePtr  Compiler::impImplicitR4orR8Cast(GenTreePtr  tree,
                                             var_types   dstTyp)
 {
-#ifdef _TARGET_64BIT_
+#ifndef LEGACY_BACKEND
    if (varTypeIsFloating(tree) && varTypeIsFloating(dstTyp) && (dstTyp != tree->gtType))
    {
        tree = gtNewCastNode(dstTyp, tree, dstTyp);
    }
-#endif // _TARGET_64BIT_
+#endif // !LEGACY_BACKEND
 
     return tree;
 }
@@ -3274,7 +3259,7 @@ GenTreePtr      Compiler::impArrayAccessIntrinsic(CORINFO_CLASS_HANDLE  clsHnd,
         }
         else
         {
-            _ASSERTE(intrinsicID == CORINFO_INTRINSIC_Array_Address);
+            assert(intrinsicID == CORINFO_INTRINSIC_Array_Address);
 
             // Fetch the return type
             typeInfo retInfo = verMakeTypeInfo(LocalSig.retType, LocalSig.retTypeClass);
@@ -7123,7 +7108,7 @@ GenTreePtr          Compiler::impFixupStructReturnType(GenTreePtr op, CORINFO_CL
     assert(varTypeIsStruct(info.compRetType));
     assert(info.compRetBuffArg == BAD_VAR_NUM);
 
-#if defined(_TARGET_X86_) || defined(_TARGET_AMD64_)
+#if defined(_TARGET_XARCH_)
 
 #ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
     // No VarArgs for CoreCLR on x64 Unix
@@ -9833,7 +9818,7 @@ ARR_LD_POST_VERIFY:
                 {
                     arrayElem = typeInfo::nativeInt();
                 }
-#endif // _TARGET_64_BIT
+#endif // _TARGET_64BIT_
                 Verify(tiArray.IsNullObjRef() ||
                        typeInfo::AreEquivalent(verGetArrayElemType(tiArray), arrayElem), "bad array");
 
@@ -9902,7 +9887,6 @@ ARR_LD_POST_VERIFY:
             }
             else
             {
-                // On Amd64 add an explicit cast between float and double
                 op2 = impImplicitR4orR8Cast(op2, op1->TypeGet());
                 op1 = gtNewAssignNode(op1, op2);
             }
@@ -10067,7 +10051,7 @@ MATH_OP2_FLAGS: // If 'ovfl' and 'callNode' have already been set
                 // That said, as of now it *is* a large node, so we'll do this with an assert rather
                 // than an "if".
                 assert(GenTree::s_gtNodeSizes[GT_CALL] == TREE_NODE_SZ_LARGE);
-                op1 = new (this, GT_CALL) GenTreeOp(oper, type, op1, op2 DEBUG_ARG(/*largeNode*/true));
+                op1 = new (this, GT_CALL) GenTreeOp(oper, type, op1, op2 DEBUGARG(/*largeNode*/true));
             }
             else
 #endif // SMALL_TREE_NODES
@@ -10837,7 +10821,6 @@ STIND_POST_VERIFY:
 
             impBashVarAddrsToI(op1, op2);
 
-            // On Amd64 add an explicit cast between float and double
             op2 = impImplicitR4orR8Cast(op2, lclTyp);
 
 #ifdef _TARGET_64BIT_
@@ -13838,7 +13821,7 @@ bool Compiler::impReturnInstruction(BasicBlock *block, int prefixFlags, OPCODE &
                 {
                     // If single eightbyte, the return type would have been normalized and there won't be a temp var.
                     // This code will be called only if the struct return has not been normalized (i.e. 2 eightbytes - max allowed.)
-                    assert(retRegCount == CLR_SYSTEMV_MAX_EIGHTBYTES_COUNT_TO_RETURN_IN_REGISTERS);
+                    assert(retRegCount == MAX_RET_REG_COUNT);
                     // Same as !structDesc.passedInRegisters but just don't bother with impAssignStructPtr.
 #endif // !defined(_TARGET_ARM_)
 
